@@ -1,0 +1,9 @@
+.classpath
+.metadata
+.project
+.settings
+target
+*.swp
+*.releaseBackup
+/.idea
+*.iml
