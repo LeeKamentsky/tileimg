@@ -22,14 +22,7 @@ import loci.common.services.ServiceFactory;
 import loci.formats.FormatException;
 import loci.formats.ImageReader;
 import loci.formats.ImageWriter;
-import loci.formats.MetadataTools;
-import loci.formats.codec.CodecOptions;
-import loci.formats.meta.IMetadata;
-import loci.formats.meta.MetadataConverter;
-import loci.formats.meta.MetadataRetrieve;
-import loci.formats.meta.MetadataStore;
 import loci.formats.ome.OMEXMLMetadata;
-import loci.formats.out.OMETiffWriter;
 import loci.formats.out.TiffWriter;
 import loci.formats.services.OMEXMLService;
 import loci.formats.tiff.IFD;
@@ -56,6 +49,8 @@ public class TileImg {
 	private static final String OVERLAP = "overlap";
 	private static final String WIDTH = "width";
 	private static final String HEIGHT = "height";
+	private static final String SKIP = "skip";
+	private static final String PAD= "pad";
 	private static final int DEFAULT_HEIGHT = 1024;
 	private static final int DEFAULT_WIDTH = 1024;
 	private static final int DEFAULT_OVERLAP = 0;
@@ -68,7 +63,9 @@ public class TileImg {
 		options.addOption("?", "help", false, "Print help usage");
 		options.addOption("h", HEIGHT, true, "The height of each tile");
 		options.addOption("w", WIDTH, true, "The width of each tile");
-		options.addOption("o", OVERLAP, true, "The amount of pixels shared between adjacent tiles");
+		options.addOption("v", OVERLAP, true, "The amount of pixels shared between adjacent tiles");
+		options.addOption("s", SKIP, false, "Make tiles of exactly the height and width entered and skip the last tile if height and width are smaller");
+		options.addOption("p", PAD, false, "Make tiles of exactly the height and width entered and pad the last tile with zeros to make it the same size as the others");
 		Option option = new Option("i", INPUT_FILE, true, "The location of the input image file");
 		option.setRequired(true);
 		options.addOption(option);
@@ -80,10 +77,19 @@ public class TileImg {
 			if (cmdline.hasOption("help")) {
 				HelpFormatter hf = new HelpFormatter();
 				hf.printHelp("tileimg", options);
+				return;
 			}
 			int height = cmdline.hasOption(HEIGHT)?Integer.valueOf(cmdline.getOptionValue(HEIGHT)):DEFAULT_HEIGHT;
 			int width = cmdline.hasOption(WIDTH)?Integer.valueOf(cmdline.getOptionValue(WIDTH)):DEFAULT_WIDTH;
 			int overlap = cmdline.hasOption(OVERLAP)?Integer.valueOf(cmdline.getOptionValue(OVERLAP)): DEFAULT_OVERLAP;
+			boolean skip = cmdline.hasOption(SKIP);
+			boolean pad = cmdline.hasOption(PAD);
+			if (skip && pad) {
+				System.err.println("Illegal option combination: specify either skip or pad, but not both.");
+				HelpFormatter hf = new HelpFormatter();
+				hf.printHelp("tileimg", options);
+				return;
+			}
 			String inputFile = cmdline.getOptionValue(INPUT_FILE);
 			final File inputIOFile = new File(inputFile);
 			if (! inputIOFile.canRead()) {
@@ -116,41 +122,42 @@ public class TileImg {
 				int imageWidth = rdr.getSizeX();
 				int nVerticalTiles = (imageHeight + height - 1) / (height - overlap);
 				int nHorizTiles = (imageWidth + width - 1) / (width - overlap);
-				int adjTileWidth = imageWidth / nHorizTiles;
-				int adjTileHeight = imageHeight / nVerticalTiles;
+				int adjTileWidth = (pad | skip)?width:((imageWidth+overlap *(nHorizTiles-1)+nHorizTiles-1) / nHorizTiles);
+				int adjTileHeight = (pad | skip)?height:((imageHeight+overlap*(nVerticalTiles-1)+nVerticalTiles-1) / nVerticalTiles);
 				for (int index=0; index < rdr.getImageCount(); index++) {
 					for (int xIndex=0; xIndex < nHorizTiles; xIndex++) {
-						int xCenter = width / 2 + adjTileWidth * xIndex;
-						int xLeftEdge = Math.max(0, xCenter - width/2);
-						int xRightEdge = Math.min(imageWidth, xCenter + width / 2);
+						int xLeftEdge = (adjTileWidth-overlap) * xIndex;
+						int xRightEdge = Math.min(imageWidth, xLeftEdge + adjTileWidth);
 						for (int yIndex=0; yIndex < nVerticalTiles; yIndex++) {
-							int yCenter = height / 2 + adjTileHeight * yIndex;
-							int yTopEdge = Math.max(0, yCenter - height/2);
-							int yBottomEdge = Math.min(imageHeight, yCenter + height / 2);
+							int yTopEdge = (adjTileHeight-overlap) * yIndex;
+							int yBottomEdge = Math.min(imageHeight, yTopEdge+adjTileHeight);
 							final int tileWidth = xRightEdge-xLeftEdge;
 							final int tileHeight = yBottomEdge-yTopEdge;
-							byte [] buf = rdr.openBytes(index, xLeftEdge, yTopEdge, tileWidth, tileHeight);
+							if (skip && ((tileWidth < width) || (tileHeight < height))) continue;
+							byte [] buf = rdr.openBytes(
+									index, xLeftEdge, yTopEdge, 
+									tileWidth, tileHeight);
 							String filename = String.format(format, xLeftEdge, yTopEdge, series, index);
 							File outputFile = new File(outputDir, filename);
 							if (outputFile.exists()) outputFile.delete();
 							ImageWriter writer = new ImageWriter();
 							OMEXMLMetadata metadata = service.createOMEXMLMetadata();
 							metadata.setImageID(store.getImageID(series), 0);
-							metadata.setPixelsID(store.getPixelsID(index), 0);
-							for (int channelIdx=0; channelIdx < store.getChannelCount(index); channelIdx++) {
-								metadata.setChannelID(store.getChannelID(index, channelIdx), 0, channelIdx);
-								metadata.setChannelName(store.getChannelName(index, channelIdx), 0, channelIdx);
-								metadata.setChannelSamplesPerPixel(store.getChannelSamplesPerPixel(index, channelIdx), 0, channelIdx);
+							metadata.setPixelsID(store.getPixelsID(series), 0);
+							for (int channelIdx=0; channelIdx < store.getChannelCount(series); channelIdx++) {
+								metadata.setChannelID(store.getChannelID(series, channelIdx), 0, channelIdx);
+								metadata.setChannelName(store.getChannelName(series, channelIdx), 0, channelIdx);
+								metadata.setChannelSamplesPerPixel(store.getChannelSamplesPerPixel(series, channelIdx), 0, channelIdx);
 							}
-							metadata.setPixelsBigEndian(store.getPixelsBigEndian(index), 0);
-							metadata.setPixelsSignificantBits(store.getPixelsSignificantBits(index), 0);
-							metadata.setPixelsType(store.getPixelsType(index), 0);
+							metadata.setPixelsBigEndian(store.getPixelsBigEndian(series), 0);
+							metadata.setPixelsSignificantBits(store.getPixelsSignificantBits(series), 0);
+							metadata.setPixelsType(store.getPixelsType(series), 0);
 							metadata.setPixelsDimensionOrder(DimensionOrder.XYCZT, 0);
-							metadata.setPixelsSizeX(new PositiveInteger(tileWidth), 0);
-							metadata.setPixelsSizeY(new PositiveInteger(tileHeight), 0);
+							metadata.setPixelsSizeX(new PositiveInteger(pad?adjTileWidth:tileWidth), 0);
+							metadata.setPixelsSizeY(new PositiveInteger(pad?adjTileHeight:tileHeight), 0);
 							final PositiveInteger one = new PositiveInteger(1);
-							if (store.getChannelCount(index) == 1)
-								metadata.setPixelsSizeC(store.getChannelSamplesPerPixel(index, 0), 0);
+							if (store.getChannelCount(series) == 1)
+								metadata.setPixelsSizeC(store.getChannelSamplesPerPixel(series, 0), 0);
 							metadata.setPixelsSizeT(one, 0);
 							metadata.setPixelsSizeZ(one, 0);
 							writer.setMetadataRetrieve(metadata);
@@ -160,10 +167,22 @@ public class TileImg {
 							if (writer.getWriter() instanceof TiffWriter) {
 								TiffWriter tiffWriter = (TiffWriter)(writer.getWriter());
 								IFD ifd = new IFD();
-								ifd.putIFDValue(IFD.ROWS_PER_STRIP, new long[] {tileHeight});
-								tiffWriter.saveBytes(0, buf, ifd);
+								ifd.putIFDValue(IFD.ROWS_PER_STRIP, new long[] {adjTileHeight});
+								tiffWriter.saveBytes(0, buf, ifd, 0, 0, tileWidth, tileHeight);
 							} else {
-								writer.saveBytes(0, buf);
+								writer.saveBytes(0, buf, 0, 0, tileWidth, tileHeight);
+							}
+							if (pad) {
+								final int wPad = adjTileWidth - tileWidth;
+								final int hPad = adjTileHeight - tileHeight;
+								if (wPad > 0) {
+									byte [] temp = new byte[wPad * adjTileHeight];
+									writer.saveBytes(0, temp, tileWidth, 0, wPad, adjTileHeight);
+								}
+								if (hPad > 0) {
+									byte [] temp = new byte[hPad * adjTileWidth];
+									writer.saveBytes(0, temp, 0, tileHeight, adjTileWidth, hPad);
+								}
 							}
 							writer.close();
 							logger.info(String.format("Wrote %s", outputFile.getName()));
@@ -186,5 +205,4 @@ public class TileImg {
 		}
 
 	}
-
 }
