@@ -1,6 +1,6 @@
 It's a program that uses Bio-Formats to read a TIF stack and cut it up into manageably-sized tiles. Build it using 
 
-`mvn assembly:single`
+`mvn package`
 
 then run it like this:
 
