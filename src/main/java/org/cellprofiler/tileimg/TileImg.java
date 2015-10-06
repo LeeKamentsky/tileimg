@@ -158,6 +158,8 @@ public class TileImg {
 							final PositiveInteger one = new PositiveInteger(1);
 							if (store.getChannelCount(series) == 1)
 								metadata.setPixelsSizeC(store.getChannelSamplesPerPixel(series, 0), 0);
+							else
+								metadata.setPixelsSizeC(store.getPixelsSizeC(0), 0);
 							metadata.setPixelsSizeT(one, 0);
 							metadata.setPixelsSizeZ(one, 0);
 							writer.setMetadataRetrieve(metadata);
